@@ -13,18 +13,27 @@ app = FastAPI()
 
 
 def clean_dni(value) -> str:
-    """Normalize DNI/ID: strip whitespace, uppercase, remove leading zeros."""
+    """Normalize DNI/ID: strip whitespace, uppercase, remove leading zeros.
+    Handles pandas float conversion (10008.0 -> '10008').
+    """
     if pd.isna(value):
         return ""
+    # If it's a float that is really an integer (e.g. 10008.0), convert to int first
+    if isinstance(value, float) and value == int(value):
+        value = int(value)
     s = str(value).strip().upper()
-    s = s.replace(".", "").replace("-", "").replace(" ", "")
+    # Remove dashes and spaces (but NOT dots yet — they were handled above)
+    s = s.replace("-", "").replace(" ", "")
+    # If there's a trailing ".0" still (from string-typed "10008.0"), remove it
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
     # If the entire string is numeric, strip leading zeros
     if s.isdigit():
-        s = s.lstrip("0")
+        s = s.lstrip("0") or "0"
     # If the string ends with a letter but the rest is numeric (like a Spanish DNI),
     # strip leading zeros from the numeric part.
     elif len(s) > 1 and s[:-1].isdigit():
-        numeric_part = s[:-1].lstrip("0")
+        numeric_part = s[:-1].lstrip("0") or "0"
         s = numeric_part + s[-1]
     return s
 
@@ -90,7 +99,7 @@ async def process_payroll(
 
         xrp_data = pd.DataFrame()
         xrp_data["dni_clean"] = df_xrp[XRP_COL_ID].apply(clean_dni)
-        xrp_data["id_xrp"] = df_xrp[XRP_COL_ID].astype(str).str.strip()
+        xrp_data["id_xrp"] = df_xrp[XRP_COL_ID].apply(clean_dni)
         xrp_data["nombre_xrp"] = df_xrp[XRP_COL_NOMBRE].astype(str).str.strip()
         xrp_data["devengos_xrp"] = df_xrp[XRP_COL_DEVENGOS].apply(safe_float)
         
@@ -128,7 +137,7 @@ async def process_payroll(
 
         meta4_data = pd.DataFrame()
         meta4_data["dni_clean"] = df_meta4[META4_COL_ID].apply(clean_dni)
-        meta4_data["id_meta4"] = df_meta4[META4_COL_ID].astype(str).str.strip()
+        meta4_data["id_meta4"] = df_meta4[META4_COL_ID].apply(clean_dni)
 
         # Nombre en Meta4 (intentando juntar apellidos si existen, o usar nombre directo)
         col_ap1 = find_column(df_meta4, ["Apellido_1", "Primer Apellido"])
