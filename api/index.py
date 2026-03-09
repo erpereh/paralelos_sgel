@@ -286,7 +286,7 @@ async def generate_excel(req: ExcelRequest):
             "Nombre", "ID Empleado", "Empresa",
             "Devengos XRP", "Deducciones XRP", "LÍQUIDO XRP",
             "Devengos META4", "Deducciones META4", "LÍQUIDO META4",
-            "DIFERENCIA", "CONVENIO XRP", "CONVENIO META4", "COINCIDENCIA"
+            "DIFERENCIA", "CONVENIO XRP", "CONVENIO META4"
         ]
 
         # Estilos visuales
@@ -298,6 +298,7 @@ async def generate_excel(req: ExcelRequest):
             top=Side(style="thin"), bottom=Side(style="thin"),
         )
         diff_fill = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")
+        conv_diff_fill = PatternFill(start_color="FFE699", end_color="FFE699", fill_type="solid") # Orange/Yellow
         data_font = Font(name="Calibri", size=10)
         num_fmt = "#,##0.00"
 
@@ -316,9 +317,10 @@ async def generate_excel(req: ExcelRequest):
                 record.devengos_xrp, record.deducciones_xrp, record.liquido_xrp,
                 record.devengos_meta4, record.deducciones_meta4, record.liquido_meta4,
                 record.diferencia,
-                record.convenio_xrp, record.convenio_meta4, record.convenio_match
+                record.convenio_xrp, record.convenio_meta4
             ]
             has_diff = abs(record.diferencia) > 0.01
+            conv_mismatch = record.convenio_match == "NO COINCIDE"
 
             for col_idx, value in enumerate(values, 1):
                 cell = ws.cell(row=row_idx, column=col_idx, value=value)
@@ -328,9 +330,14 @@ async def generate_excel(req: ExcelRequest):
                 if isinstance(value, (int, float)) and col_idx >= 4:
                     cell.number_format = num_fmt
                     cell.alignment = Alignment(horizontal="right")
-                # Format background if diff
+                
+                # Format background if diff in totals
                 if has_diff:
                     cell.fill = diff_fill
+                
+                # Format background specifically for Convenio columns if they mismatch
+                if conv_mismatch and col_idx in (11, 12):
+                    cell.fill = conv_diff_fill
 
         # Ajuste dinámico col_width
         for col_idx in range(1, len(headers) + 1):

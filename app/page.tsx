@@ -41,6 +41,7 @@ export default function Home() {
 
     // Filters
     const [showDescuadresOnly, setShowDescuadresOnly] = useState(false);
+    const [showConvenioDescuadresOnly, setShowConvenioDescuadresOnly] = useState(false);
     const [showBothSystemsOnly, setShowBothSystemsOnly] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
 
@@ -102,6 +103,11 @@ export default function Home() {
             rows = rows.filter((r) => Math.abs(r.diferencia) > 0.01);
         }
 
+        // Filter 3: Ocultar coincidencias de Convenio
+        if (showConvenioDescuadresOnly) {
+            rows = rows.filter((r) => r.convenio_match === "NO COINCIDE");
+        }
+
         // Filter 3: Búsqueda por nombre o ID
         if (searchQuery.trim()) {
             const q = searchQuery.trim().toLowerCase();
@@ -135,7 +141,7 @@ export default function Home() {
         }
 
         return rows;
-    }, [result, showBothSystemsOnly, showDescuadresOnly, searchQuery, sortKey, sortDir]);
+    }, [result, showBothSystemsOnly, showDescuadresOnly, showConvenioDescuadresOnly, searchQuery, sortKey, sortDir]);
 
     return (
         <main className="min-h-screen py-12 px-4 sm:px-6 lg:px-8">
@@ -250,7 +256,23 @@ export default function Home() {
                                         <div className="absolute left-0.5 top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-5" />
                                     </div>
                                     <span className="text-sm font-medium text-slate-700">
-                                        Ocultar coincidencias (ver descuadres)
+                                        Ocultar coincidencias (ver descuadres dinero)
+                                    </span>
+                                </label>
+
+                                <label className="inline-flex items-center gap-3 cursor-pointer select-none">
+                                    <div className="relative">
+                                        <input
+                                            type="checkbox"
+                                            checked={showConvenioDescuadresOnly}
+                                            onChange={(e) => setShowConvenioDescuadresOnly(e.target.checked)}
+                                            className="sr-only peer"
+                                        />
+                                        <div className="w-11 h-6 rounded-full bg-slate-200 peer-checked:bg-orange-500 transition-colors" />
+                                        <div className="absolute left-0.5 top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-5" />
+                                    </div>
+                                    <span className="text-sm font-medium text-slate-700">
+                                        Ocultar coincidencias (ver descuadres Convenio)
                                     </span>
                                 </label>
                             </div>
