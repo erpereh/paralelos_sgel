@@ -4,7 +4,12 @@ export default function HubPage() {
     return (
         <main className="min-h-screen bg-slate-50 flex flex-col pt-12 sm:pt-20 px-4 sm:px-6 lg:px-8">
             {/* Header */}
-            <header className="text-center mb-16 max-w-3xl mx-auto animate-fade-in opacity-0" style={{ animationDelay: '100ms' }}>
+            <header className="text-center mb-16 max-w-3xl mx-auto flex flex-col items-center animate-fade-in opacity-0" style={{ animationDelay: '100ms' }}>
+                <img
+                    src="/logo.png"
+                    alt="Quality Solutions Logo"
+                    className="h-20 sm:h-24 w-auto mb-6 drop-shadow-md hover:scale-105 transition-transform duration-300"
+                />
                 <h1 className="text-5xl md:text-6xl font-extrabold tracking-tight text-slate-900 mb-4">
                     Quality <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-600 to-brand-800">Solutions</span>
                 </h1>

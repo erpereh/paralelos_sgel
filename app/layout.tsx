@@ -15,9 +15,14 @@ const jetbrains = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-    title: "Conciliación de Nóminas — SGEL",
-    description:
-        "Herramienta de conciliación de nóminas entre XRP y Meta4 para SGEL",
+    title: {
+        template: "%s | Quality Solutions",
+        default: "Quality Solutions Hub",
+    },
+    description: "Plataforma de herramientas internas de Quality Solutions",
+    icons: {
+        icon: "/logo.png",
+    },
 };
 
 export default function RootLayout({
