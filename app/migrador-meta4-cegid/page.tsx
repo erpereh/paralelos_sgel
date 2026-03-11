@@ -18,6 +18,7 @@ interface MigracionRow {
     cegid_formula: string;
     logica_aplicada: string;
     anotaciones: string;
+    status?: string;
     created_at: string;
 }
 
@@ -107,13 +108,17 @@ export default function MigradorPage() {
             .on(
                 "postgres_changes",
                 {
-                    event: "INSERT",
+                    event: "*",
                     schema: "public",
                     table: "migracion_conceptos",
                     filter: `job_id=eq.${jobId}`
                 },
                 (payload) => {
-                    setResults((prev) => [...prev, payload.new as MigracionRow]);
+                    if (payload.eventType === 'INSERT') {
+                        setResults((prev) => [...prev, payload.new as MigracionRow]);
+                    } else if (payload.eventType === 'UPDATE') {
+                        setResults((prev) => prev.map(row => row.id === payload.new.id ? payload.new as MigracionRow : row));
+                    }
                 }
             )
             .subscribe();
@@ -382,6 +387,9 @@ export default function MigradorPage() {
                                             <th className="px-3 py-3 font-semibold cursor-pointer select-none hover:bg-brand-700 transition-colors w-[30%]" onClick={() => handleSort("cegid_formula")}>
                                                 FÓRMULA CEGID XRP <SortArrow active={sortKey === "cegid_formula"} dir={sortDir} />
                                             </th>
+                                            <th className="px-3 py-3 font-semibold cursor-pointer select-none hover:bg-brand-700 transition-colors w-[10%]" onClick={() => handleSort("status")}>
+                                                ESTADO <SortArrow active={sortKey === "status"} dir={sortDir} />
+                                            </th>
                                             <th className="px-3 py-3 font-semibold cursor-pointer select-none hover:bg-brand-700 transition-colors rounded-tr-xl" onClick={() => handleSort("logica_aplicada")}>
                                                 LÓGICA Y ANOTACIONES <SortArrow active={sortKey === "logica_aplicada"} dir={sortDir} />
                                             </th>
@@ -399,6 +407,15 @@ export default function MigradorPage() {
                                                 <td className="px-3 py-3 text-sm text-brand-700 font-mono bg-brand-50/20">
                                                     {row.cegid_formula}
                                                 </td>
+                                                <td className="px-3 py-3 text-sm">
+                                                    {row.status === 'completado' ? (
+                                                        <span className="inline-flex items-center px-2 py-1 rounded-md bg-emerald-100 text-emerald-700 text-xs font-medium">✓ Completado</span>
+                                                    ) : row.status === 'error' ? (
+                                                        <span className="inline-flex items-center px-2 py-1 rounded-md bg-red-100 text-red-700 text-xs font-medium">✕ Error</span>
+                                                    ) : (
+                                                        <span className="inline-flex items-center px-2 py-1 rounded-md bg-amber-100 text-amber-700 text-xs font-medium animate-pulse">⟳ Procesando</span>
+                                                    )}
+                                                </td>
                                                 <td className="px-3 py-3 text-sm text-slate-600">
                                                     <div className="flex flex-col gap-1">
                                                         <span>{row.logica_aplicada}</span>
@@ -411,7 +428,7 @@ export default function MigradorPage() {
                                         ))}
                                         {visibleData.length === 0 && (
                                             <tr>
-                                                <td colSpan={4} className="px-6 py-8 text-center text-sm text-slate-500">
+                                                <td colSpan={5} className="px-6 py-8 text-center text-sm text-slate-500">
                                                     {isProcessing ? "Esperando la respuesta de la IA (Realtime activado)..." : "No hay resultados."}
                                                 </td>
                                             </tr>

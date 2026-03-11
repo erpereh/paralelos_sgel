@@ -1,0 +1,184 @@
+{
+  "name": "Migración Nómina Meta4 -> Cegid XRP",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "migrar-nomina",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "e0b57fa0-a292-4e02-beed-009149451def",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        380,
+        240
+      ],
+      "webhookId": "9aab2f22-1d12-4217-9136-1e0e8568e22d"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "c1f7cd71-55f7-4a00-befd-8067b66dfc98",
+      "name": "Extract Data",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "typeVersion": 1,
+      "position": [
+        600,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "31eeedbb-b9cd-4ebb-babf-2fed871a3641",
+      "name": "Split In Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 2,
+      "position": [
+        820,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list"
+        },
+        "messages": {
+          "messageValues": [
+            {
+              "message": "Eres un experto analizador de nóminas. Te van a pasar un Concepto y una Fórmula Meta4. Debes analizar la lógica subyacente de la fórmula y traducirla a una pseudofórmula o estructura lógica compatible con Cegid XRP. Retorna tu respuesta ÚNICAMENTE como un JSON válido como este:\n\n{\n  \"logica_aplicada\": \"Explicación de la condición y cálculo...\",\n  \"cegid_formula\": \"Ej: SI(Condicion, Verdadero, Falso)...\",\n  \"anotaciones\": \"Cualquier nota adicional, variables que falten...\"\n}"
+            },
+            {
+              "role": "user",
+              "message": "=Concepto: {{$json.Concepto}}\\nFórmula Meta4: {{$json.Formula}}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "0d1fcb73-c15c-434a-8d59-3d02ddb64593",
+      "name": "OpenAI",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.4,
+      "position": [
+        1040,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "migracion_conceptos",
+        "columns": "job_id,concepto,meta4_formula,cegid_formula,logica_aplicada,anotaciones",
+        "options": {}
+      },
+      "id": "f51c72df-dc7d-47be-a9b8-17b2b6ab0c23",
+      "name": "Insert Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1260,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "item.job_id = $('Webhook').first().json.body.job_id || 'manual-uuid';\nitem.concepto = $('Split In Batches').item.json.Concepto || $('Split In Batches').item.json.concepto;\nitem.meta4_formula = $('Split In Batches').item.json.Formula || $('Split In Batches').item.json.formula;\n\nlet parsed = {};\ntry {\n  parsed = JSON.parse($('OpenAI').item.json.message.content);\n} catch(e) {}\n\nitem.cegid_formula = parsed.cegid_formula || '';\nitem.logica_aplicada = parsed.logica_aplicada || '';\nitem.anotaciones = parsed.anotaciones || '';\n\nreturn item;"
+      },
+      "id": "67fba0b9-ca91-45bd-a3ca-299f187aed24",
+      "name": "Map Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        240
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Data": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [
+          {
+            "node": "OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI": {
+      "main": [
+        [
+          {
+            "node": "Map Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Data": {
+      "main": [
+        [
+          {
+            "node": "Insert Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Supabase": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}
