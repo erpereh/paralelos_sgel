@@ -37,10 +37,11 @@ export async function POST(request: NextRequest) {
 
         const data = await n8nResponse.json().catch(() => ({ ok: true }));
         return NextResponse.json(data);
-    } catch (error) {
-        console.error("Proxy error:", error);
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("Proxy error:", message, error);
         return NextResponse.json(
-            { error: "Error interno del proxy" },
+            { error: "Error interno del proxy", details: message },
             { status: 500 }
         );
     }
