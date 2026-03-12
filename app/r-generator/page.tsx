@@ -13,6 +13,7 @@ export default function RGeneratorPage() {
     const [previewColumns, setPreviewColumns] = useState<string[]>([]);
     const [previewRows, setPreviewRows] = useState<Record<string, string>[]>([]);
     const [filters, setFilters] = useState<Record<string, string>>({});
+    const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const onFile = (f: File) => {
@@ -22,6 +23,7 @@ export default function RGeneratorPage() {
         setPreviewColumns([]);
         setPreviewRows([]);
         setFilters({});
+        setSelectedRows(new Set());
     };
 
     const onFileChange = (e: ChangeEvent<HTMLInputElement>) => {
@@ -76,8 +78,8 @@ export default function RGeneratorPage() {
             const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" }) as string[][];
             const [headerRow = [], ...dataRows] = rows;
             const columns = headerRow.map((c) => String(c || "").trim()).filter(Boolean);
-            const data = dataRows.map((row) => {
-                const record: Record<string, string> = {};
+            const data = dataRows.map((row, rowIndex) => {
+                const record: Record<string, string> = { __rowId: String(rowIndex) };
                 columns.forEach((col, idx) => {
                     record[col] = String(row[idx] ?? "");
                 });
@@ -86,6 +88,7 @@ export default function RGeneratorPage() {
             setPreviewColumns(columns);
             setPreviewRows(data);
             setFilters({});
+            setSelectedRows(new Set());
 
             setSuccess(true);
         } catch (err) {
@@ -108,11 +111,37 @@ export default function RGeneratorPage() {
 
     const handleDownloadFiltered = () => {
         if (!previewColumns.length) return;
-        const data = [previewColumns, ...filteredRows.map((row) => previewColumns.map((col) => row[col] ?? ""))];
+        const rowsToDownload = selectedRows.size
+            ? filteredRows.filter((row) => selectedRows.has(Number(row.__rowId)))
+            : filteredRows;
+        const data = [previewColumns, ...rowsToDownload.map((row) => previewColumns.map((col) => row[col] ?? ""))];
         const ws = XLSX.utils.aoa_to_sheet(data);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "Plantilla R");
         XLSX.writeFile(wb, "Plantilla_R_Resultado.xlsx");
+    };
+
+    const toggleRow = (rowId: number) => {
+        setSelectedRows((prev) => {
+            const next = new Set(prev);
+            if (next.has(rowId)) next.delete(rowId);
+            else next.add(rowId);
+            return next;
+        });
+    };
+
+    const toggleAllVisible = () => {
+        setSelectedRows((prev) => {
+            const visibleIds = filteredRows.map((row) => Number(row.__rowId));
+            const allSelected = visibleIds.every((id) => prev.has(id));
+            const next = new Set(prev);
+            if (allSelected) {
+                visibleIds.forEach((id) => next.delete(id));
+            } else {
+                visibleIds.forEach((id) => next.add(id));
+            }
+            return next;
+        });
     };
 
     return (
@@ -262,7 +291,7 @@ export default function RGeneratorPage() {
                                     onClick={handleDownloadFiltered}
                                     className="inline-flex items-center gap-2 rounded-full border border-brand-200 bg-brand-50 px-4 py-2 text-xs font-semibold text-brand-700 transition-colors hover:bg-brand-100"
                                 >
-                                    Descargar filtrado
+                                    Descargar selección
                                 </button>
                                 <div className="text-xs text-slate-500 bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-full">
                                     Filas visibles: <span className="font-semibold text-slate-700">{filteredRows.length}</span>
@@ -275,6 +304,17 @@ export default function RGeneratorPage() {
                                 <table className="min-w-max w-full text-sm">
                                     <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700">
                                         <tr>
+                                            <th className="px-3 py-2 text-left font-semibold border-b border-slate-200">
+                                                <div className="flex flex-col gap-2">
+                                                    <span className="text-xs uppercase tracking-wide text-slate-500">Sel</span>
+                                                    <button
+                                                        onClick={toggleAllVisible}
+                                                        className="w-9 rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-50 text-center"
+                                                    >
+                                                        {filteredRows.length > 0 && filteredRows.every((row) => selectedRows.has(Number(row.__rowId))) ? "None" : "All"}
+                                                    </button>
+                                                </div>
+                                            </th>
                                             {previewColumns.map((col) => (
                                                 <th key={col} className="px-3 py-2 text-left font-semibold border-b border-slate-200">
                                                     <div className="flex flex-col gap-2">
@@ -292,8 +332,16 @@ export default function RGeneratorPage() {
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100">
-                                        {filteredRows.map((row, idx) => (
-                                            <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                                        {filteredRows.map((row) => (
+                                            <tr key={row.__rowId} className="hover:bg-slate-50 transition-colors">
+                                                <td className="px-3 py-2">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedRows.has(Number(row.__rowId))}
+                                                        onChange={() => toggleRow(Number(row.__rowId))}
+                                                        className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-400"
+                                                    />
+                                                </td>
                                                 {previewColumns.map((col) => (
                                                     <td key={col} className="px-3 py-2 text-slate-700 whitespace-nowrap">
                                                         {row[col]}
