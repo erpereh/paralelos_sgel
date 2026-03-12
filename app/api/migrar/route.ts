@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import { CEGID_RULES } from "@/app/lib/cegidContext";
 
 export const maxDuration = 60;
 export const runtime = 'nodejs'; // Usar Node.js runtime para max 60s en Pro, 10s en Hobby
@@ -13,7 +14,10 @@ const SYSTEM_PROMPT = `Eres un consultor técnico senior especializado en nómin
 6. 'cegid_unidades': Lógica de unidades adaptada a Cegid XRP.
 7. 'cegid_precio': Lógica de precio adaptada a Cegid XRP.
 8. 'logica_aplicada': Breve explicación técnica de la transformación.
-9. 'anotaciones': Advertencias técnicas.`;
+9. 'anotaciones': Advertencias técnicas.
+
+Sigue ESTRICTAMENTE este manual técnico para generar los valores de las claves de Cegid XRP:
+${CEGID_RULES}`;
 
 interface RawRow {
     concepto: string;

@@ -5,7 +5,8 @@
       "Bash(cd \"/c/Users/Perez/Documents/aQuality SolutIon/proyectos git/paralelos_sgel\" && rm -f n8n_migracion_nomina.json && rm -rf supabase/)",
       "Bash(cd \"/c/Users/Perez/Documents/aQuality SolutIon/proyectos git/paralelos_sgel\" && npx next build 2>&1 | tail -30)",
       "Bash(cd \"/c/Users/Perez/Documents/aQuality SolutIon/proyectos git/paralelos_sgel\" && npx next build 2>&1 | tail -35)",
-      "Bash(cd \"/c/Users/Perez/Documents/aQuality SolutIon/proyectos git/paralelos_sgel\" && npx next build 2>&1 | grep -E \"\\(Compiled|error\\)\")"
+      "Bash(cd \"/c/Users/Perez/Documents/aQuality SolutIon/proyectos git/paralelos_sgel\" && npx next build 2>&1 | grep -E \"\\(Compiled|error\\)\")",
+      "Bash(cd \"/c/Users/Perez/Documents/aQuality SolutIon/proyectos git/paralelos_sgel\" && npx next build 2>&1 | grep -E \"\\(Compiled|error|import\\)\" | head -10)"
     ]
   }
 }
