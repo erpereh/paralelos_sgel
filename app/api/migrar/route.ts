@@ -39,7 +39,7 @@ async function processRow(
 ): Promise<MigracionResult> {
     try {
         const completion = await openai.chat.completions.create({
-            model: "deepseek/deepseek-r1-distill-llama-70b:free",
+            model: "stepfun/step-3.5-flash:free",
             messages: [
                 { role: "system", content: SYSTEM_PROMPT },
                 {
