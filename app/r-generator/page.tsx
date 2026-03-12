@@ -1,20 +1,27 @@
 ﻿"use client";
 
-import { useRef, useState, DragEvent, ChangeEvent } from "react";
+import { useRef, useState, DragEvent, ChangeEvent, useMemo } from "react";
 import Link from "next/link";
+import * as XLSX from "xlsx";
 
-export default function SgelGeneratorPage() {
+export default function RGeneratorPage() {
     const [file, setFile] = useState<File | null>(null);
     const [isDragging, setIsDragging] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState(false);
+    const [previewColumns, setPreviewColumns] = useState<string[]>([]);
+    const [previewRows, setPreviewRows] = useState<Record<string, string>[]>([]);
+    const [filters, setFilters] = useState<Record<string, string>>({});
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const onFile = (f: File) => {
         setFile(f);
         setError(null);
         setSuccess(false);
+        setPreviewColumns([]);
+        setPreviewRows([]);
+        setFilters({});
     };
 
     const onFileChange = (e: ChangeEvent<HTMLInputElement>) => {
@@ -62,14 +69,23 @@ export default function SgelGeneratorPage() {
             }
 
             const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.href = url;
-            link.download = "Plantilla_R_Resultado.xlsx";
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(url);
+            const arrayBuffer = await blob.arrayBuffer();
+            const workbook = XLSX.read(arrayBuffer, { type: "array" });
+            const sheetName = workbook.SheetNames[0];
+            const sheet = workbook.Sheets[sheetName];
+            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" }) as string[][];
+            const [headerRow = [], ...dataRows] = rows;
+            const columns = headerRow.map((c) => String(c || "").trim()).filter(Boolean);
+            const data = dataRows.map((row) => {
+                const record: Record<string, string> = {};
+                columns.forEach((col, idx) => {
+                    record[col] = String(row[idx] ?? "");
+                });
+                return record;
+            });
+            setPreviewColumns(columns);
+            setPreviewRows(data);
+            setFilters({});
 
             setSuccess(true);
         } catch (err) {
@@ -77,6 +93,26 @@ export default function SgelGeneratorPage() {
         } finally {
             setLoading(false);
         }
+    };
+
+    const filteredRows = useMemo(() => {
+        if (!previewRows.length) return [];
+        return previewRows.filter((row) =>
+            previewColumns.every((col) => {
+                const value = filters[col];
+                if (!value) return true;
+                return String(row[col] ?? "").toLowerCase().includes(value.toLowerCase());
+            })
+        );
+    }, [previewRows, previewColumns, filters]);
+
+    const handleDownloadFiltered = () => {
+        if (!previewColumns.length) return;
+        const data = [previewColumns, ...filteredRows.map((row) => previewColumns.map((col) => row[col] ?? ""))];
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Plantilla R");
+        XLSX.writeFile(wb, "Plantilla_R_Resultado.xlsx");
     };
 
     return (
@@ -213,6 +249,71 @@ export default function SgelGeneratorPage() {
                         )}
                     </div>
                 </section>
+
+                {previewColumns.length > 0 && (
+                    <section className="rounded-3xl border border-slate-200 bg-white/80 shadow-lg animate-fade-in opacity-0" style={{ animationDelay: "220ms" }}>
+                        <div className="px-6 py-5 border-b border-slate-200 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                                <h2 className="text-lg font-semibold text-slate-900">Previsualización del resultado</h2>
+                                <p className="text-sm text-slate-500">Mostrando todas las filas generadas por la IA.</p>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <button
+                                    onClick={handleDownloadFiltered}
+                                    className="inline-flex items-center gap-2 rounded-full border border-brand-200 bg-brand-50 px-4 py-2 text-xs font-semibold text-brand-700 transition-colors hover:bg-brand-100"
+                                >
+                                    Descargar filtrado
+                                </button>
+                                <div className="text-xs text-slate-500 bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-full">
+                                    Filas visibles: <span className="font-semibold text-slate-700">{filteredRows.length}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="p-4">
+                            <div className="max-h-[420px] overflow-auto rounded-2xl border border-slate-200 bg-white shadow-inner">
+                                <table className="min-w-max w-full text-sm">
+                                    <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700">
+                                        <tr>
+                                            {previewColumns.map((col) => (
+                                                <th key={col} className="px-3 py-2 text-left font-semibold border-b border-slate-200">
+                                                    <div className="flex flex-col gap-2">
+                                                        <span className="text-xs uppercase tracking-wide text-slate-500">{col}</span>
+                                                        <input
+                                                            type="text"
+                                                            value={filters[col] ?? ""}
+                                                            onChange={(e) => setFilters((prev) => ({ ...prev, [col]: e.target.value }))}
+                                                            placeholder="Filtrar..."
+                                                            className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400"
+                                                        />
+                                                    </div>
+                                                </th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {filteredRows.map((row, idx) => (
+                                            <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                                                {previewColumns.map((col) => (
+                                                    <td key={col} className="px-3 py-2 text-slate-700 whitespace-nowrap">
+                                                        {row[col]}
+                                                    </td>
+                                                ))}
+                                            </tr>
+                                        ))}
+                                        {filteredRows.length === 0 && (
+                                            <tr>
+                                                <td colSpan={previewColumns.length} className="px-4 py-8 text-center text-sm text-slate-500">
+                                                    No hay filas que coincidan con los filtros.
+                                                </td>
+                                            </tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </section>
+                )}
             </div>
         </main>
     );
