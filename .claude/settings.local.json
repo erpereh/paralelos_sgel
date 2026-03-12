@@ -11,7 +11,8 @@
       "Bash(cd \"/c/Users/Perez/Documents/aQuality SolutIon/proyectos git/paralelos_sgel\" && npm install exceljs)",
       "Bash(cd \"/c/Users/Perez/Documents/aQuality SolutIon/proyectos git/paralelos_sgel\" && npx next build 2>&1 | tail -40)",
       "Bash(cd \"/c/Users/Perez/Documents/aQuality SolutIon/proyectos git/paralelos_sgel\" && npx next build 2>&1 | grep -E \"\\(Compiled|error\\)\" | head -3)",
-      "Bash(pkill -f \"next dev\" || true)"
+      "Bash(pkill -f \"next dev\" || true)",
+      "Bash(sleep 2 && curl -s http://localhost:3006/ | head -5)"
     ]
   }
 }
