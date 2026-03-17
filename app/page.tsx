@@ -27,9 +27,9 @@ export default function HubPage() {
                         <div className="w-16 h-16 mx-auto bg-brand-50 text-brand-600 rounded-2xl flex items-center justify-center text-3xl mb-6 shadow-sm border border-brand-100 group-hover:scale-110 group-hover:bg-brand-100 transition-all duration-300">
                             🌐
                         </div>
-                        <h3 className="text-2xl font-bold text-slate-800 mb-3">Comparativa de Nóminas</h3>
+                        <h3 className="text-2xl font-bold text-slate-800 mb-3">Comparativa de Nóminas y Conceptos</h3>
                         <p className="text-slate-500 mb-8 flex-1 leading-relaxed">
-                            Analiza y detecta discrepancias automáticamente entre ficheros de haberes (XRP y Meta4) de manera inmediata.
+                            Compara haberes de nómina y conceptos entre XRP y Meta4. Detecta discrepancias y correspondencias automáticamente.
                         </p>
                         <Link
                             href="/comparativa"

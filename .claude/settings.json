@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Perez/.agents/**)",
+      "Read(//c/Users/Perez/.claude/**)",
+      "Bash(find ~/.claude -name *.md -o -name *.json)",
+      "Bash(cp -r .agents/skills/frontend-design .claude/skills/frontend-design)",
+      "Bash(cp -r .agents/skills/remotion-best-practices .claude/skills/remotion-best-practices)",
+      "Bash(cp -r .agents/skills/vercel-react-best-practices .claude/skills/vercel-react-best-practices)",
+      "Bash(cp -r .agents/skills/vercel-react-native-skills .claude/skills/vercel-react-native-skills)",
+      "Bash(mkdir -p .claude/skills)",
+      "Bash(cp -r .agents/skills/frontend-design .claude/skills/)",
+      "Bash(cp -r .agents/skills/remotion-best-practices .claude/skills/)",
+      "Bash(cp -r .agents/skills/vercel-react-best-practices .claude/skills/)",
+      "Bash(cp -r .agents/skills/vercel-react-native-skills .claude/skills/)"
+    ]
+  }
+}
