@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState, useMemo } from "react";
+import ConceptsDownloadButton from "./ConceptsDownloadButton";
 
 export interface ConceptRow {
     id_concepto_xrp: string;
@@ -215,9 +216,12 @@ export default function ConceptsResultsTable({ data, stats }: ConceptsResultsTab
                         />
                     </div>
 
-                    {/* Counter */}
-                    <div className="text-sm text-slate-500 bg-white border border-slate-200 px-4 py-2 rounded-lg shadow-sm whitespace-nowrap ml-auto">
-                        Mostrando <strong className="text-slate-800">{visibleData.length}</strong> de <strong className="text-slate-800">{stats.total}</strong> conceptos
+                    {/* Counter + Download */}
+                    <div className="flex items-center gap-4 ml-auto">
+                        <div className="text-sm text-slate-500 bg-white border border-slate-200 px-4 py-2 rounded-lg shadow-sm whitespace-nowrap">
+                            Mostrando <strong className="text-slate-800">{visibleData.length}</strong> de <strong className="text-slate-800">{stats.total}</strong> conceptos
+                        </div>
+                        <ConceptsDownloadButton data={visibleData} />
                     </div>
                 </div>
             </div>

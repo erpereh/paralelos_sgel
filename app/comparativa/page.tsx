@@ -6,7 +6,6 @@ import DropZone from "@/components/DropZone";
 import ResultsTable, { SortKey, SortDir } from "@/components/ResultsTable";
 import DownloadButton from "@/components/DownloadButton";
 import ConceptsResultsTable, { ConceptRow } from "@/components/ConceptsResultsTable";
-import ConceptsDownloadButton from "@/components/ConceptsDownloadButton";
 import Link from "next/link";
 
 /* ─── Types ─── */
@@ -638,9 +637,6 @@ export default function Home() {
                     {/* Conceptos Results */}
                     {conceptResult && (
                         <section className="space-y-6">
-                            <div className="flex items-center justify-end px-2">
-                                <ConceptsDownloadButton data={conceptResult.data} />
-                            </div>
                             <ConceptsResultsTable data={conceptResult.data} stats={conceptResult.stats} />
                         </section>
                     )}
