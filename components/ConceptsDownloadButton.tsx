@@ -10,14 +10,16 @@ interface ConceptsDownloadButtonProps {
 
 const statusLabel: Record<ConceptRow["status"], string> = {
     match: "Coincidente",
+    partial_match: "Match Parcial",
     xrp_only: "Solo XRP",
     meta4_only: "Solo Meta4",
 };
 
 const statusFill: Record<ConceptRow["status"], string> = {
-    match: "FFD1FAE5",       // emerald-100
-    xrp_only: "FFFEF3C7",   // amber-100
-    meta4_only: "FFEDE9FE",  // violet-100
+    match: "FFD1FAE5",          // emerald-100
+    partial_match: "FFE0F2FE",  // sky-100
+    xrp_only: "FFFEF3C7",      // amber-100
+    meta4_only: "FFEDE9FE",     // violet-100
 };
 
 export default function ConceptsDownloadButton({ data }: ConceptsDownloadButtonProps) {
@@ -34,32 +36,31 @@ export default function ConceptsDownloadButton({ data }: ConceptsDownloadButtonP
             });
 
             ws.columns = [
-                { header: "Convenio", key: "convenio", width: 22 },
                 { header: "ID Concepto XRP", key: "id_concepto_xrp", width: 18 },
                 { header: "Nombre XRP", key: "nombre_xrp", width: 40 },
                 { header: "Descripción Meta4", key: "descripcion_meta4", width: 40 },
-                { header: "Estado", key: "status", width: 16 },
+                { header: "Estado", key: "status", width: 18 },
+                { header: "Similitud %", key: "similarity", width: 14 },
             ];
 
-            // Header style
+            // Header style — only cells with data (A to E)
             const headerRow = ws.getRow(1);
-            headerRow.fill = {
-                type: "pattern",
-                pattern: "solid",
-                fgColor: { argb: "FF2574F2" },
-            } as any;
-            headerRow.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
-            headerRow.alignment = { horizontal: "center", vertical: "center", wrapText: true } as any;
-            ws.getRow(1).height = 30;
+            headerRow.height = 30;
+            for (let col = 1; col <= ws.columns.length; col++) {
+                const cell = headerRow.getCell(col);
+                cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2574F2" } } as any;
+                cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
+                cell.alignment = { horizontal: "center", vertical: "center", wrapText: true } as any;
+            }
 
             // Data rows
             data.forEach((row) => {
                 const dataRow = ws.addRow({
-                    convenio: row.convenio || "",
                     id_concepto_xrp: row.id_concepto_xrp || "",
                     nombre_xrp: row.nombre_xrp || "",
                     descripcion_meta4: row.descripcion_meta4 || "",
                     status: statusLabel[row.status],
+                    similarity: row.similarity != null ? `${row.similarity}%` : "",
                 });
 
                 dataRow.eachCell((cell) => {

@@ -3,20 +3,20 @@
 import { useRef, useEffect, useState, useMemo } from "react";
 
 export interface ConceptRow {
-    convenio: string;
     id_concepto_xrp: string;
     nombre_xrp: string;
     descripcion_meta4: string;
-    status: "match" | "xrp_only" | "meta4_only";
+    status: "match" | "partial_match" | "xrp_only" | "meta4_only";
+    similarity?: number;
 }
 
 type SortKey = keyof ConceptRow;
 type SortDir = "asc" | "desc";
-type FilterTab = "all" | "match" | "xrp_only" | "meta4_only";
+type FilterTab = "all" | "match" | "partial_match" | "xrp_only" | "meta4_only";
 
 interface ConceptsResultsTableProps {
     data: ConceptRow[];
-    stats: { total: number; match: number; xrp_only: number; meta4_only: number };
+    stats: { total: number; match: number; partial_match: number; xrp_only: number; meta4_only: number };
 }
 
 function SortArrow({ active, dir }: { active: boolean; dir: SortDir }) {
@@ -35,9 +35,21 @@ function SortArrow({ active, dir }: { active: boolean; dir: SortDir }) {
     );
 }
 
-function StatusBadge({ status }: { status: ConceptRow["status"] }) {
+function StatusBadge({ status, similarity }: { status: ConceptRow["status"]; similarity?: number }) {
     if (status === "match") {
         return <span className="inline-flex py-0.5 px-2.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-700">Coincidente</span>;
+    }
+    if (status === "partial_match") {
+        return (
+            <span className="inline-flex items-center gap-1 py-0.5 px-2.5 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-700">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+                Match Parcial{similarity != null ? ` ${similarity}%` : ""}
+            </span>
+        );
     }
     if (status === "xrp_only") {
         return <span className="inline-flex py-0.5 px-2.5 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-700">Solo XRP</span>;
@@ -46,7 +58,6 @@ function StatusBadge({ status }: { status: ConceptRow["status"] }) {
 }
 
 const columns: { key: SortKey; label: string }[] = [
-    { key: "convenio", label: "Convenio" },
     { key: "id_concepto_xrp", label: "ID Concepto XRP" },
     { key: "nombre_xrp", label: "Nombre XRP" },
     { key: "descripcion_meta4", label: "Descripción Meta4" },
@@ -56,6 +67,7 @@ const columns: { key: SortKey; label: string }[] = [
 const filterTabs: { key: FilterTab; label: string; color: string }[] = [
     { key: "all", label: "Todos", color: "brand" },
     { key: "match", label: "Coincidentes", color: "emerald" },
+    { key: "partial_match", label: "Match Parcial", color: "sky" },
     { key: "xrp_only", label: "Solo XRP", color: "amber" },
     { key: "meta4_only", label: "Solo Meta4", color: "violet" },
 ];
@@ -70,7 +82,6 @@ export default function ConceptsResultsTable({ data, stats }: ConceptsResultsTab
     const [sortDir, setSortDir] = useState<SortDir>("asc");
     const [activeFilter, setActiveFilter] = useState<FilterTab>("all");
     const [searchQuery, setSearchQuery] = useState("");
-    const [selectedConvenio, setSelectedConvenio] = useState("__all__");
 
     // Sync scroll
     useEffect(() => {
@@ -104,13 +115,6 @@ export default function ConceptsResultsTable({ data, stats }: ConceptsResultsTab
         }
     };
 
-    // Unique convenios
-    const convenios = useMemo(() => {
-        const set = new Set<string>();
-        data.forEach((r) => { if (r.convenio) set.add(r.convenio); });
-        return Array.from(set).sort();
-    }, [data]);
-
     // Filtered + sorted
     const visibleData = useMemo(() => {
         let rows = [...data];
@@ -119,18 +123,13 @@ export default function ConceptsResultsTable({ data, stats }: ConceptsResultsTab
             rows = rows.filter((r) => r.status === activeFilter);
         }
 
-        if (selectedConvenio !== "__all__") {
-            rows = rows.filter((r) => r.convenio === selectedConvenio);
-        }
-
         if (searchQuery.trim()) {
             const q = searchQuery.trim().toLowerCase();
             rows = rows.filter(
                 (r) =>
                     r.nombre_xrp.toLowerCase().includes(q) ||
                     r.descripcion_meta4.toLowerCase().includes(q) ||
-                    r.id_concepto_xrp.toLowerCase().includes(q) ||
-                    r.convenio.toLowerCase().includes(q)
+                    r.id_concepto_xrp.toLowerCase().includes(q)
             );
         }
 
@@ -151,7 +150,7 @@ export default function ConceptsResultsTable({ data, stats }: ConceptsResultsTab
         }
 
         return rows;
-    }, [data, activeFilter, selectedConvenio, searchQuery, sortKey, sortDir]);
+    }, [data, activeFilter, searchQuery, sortKey, sortDir]);
 
     const tabCount = (key: FilterTab) => {
         if (key === "all") return stats.total;
@@ -179,9 +178,11 @@ export default function ConceptsResultsTable({ data, stats }: ConceptsResultsTab
                                             ? "bg-brand-600 text-white shadow-md shadow-brand-200/40"
                                             : tab.key === "match"
                                                 ? "bg-emerald-600 text-white shadow-md shadow-emerald-200/40"
-                                                : tab.key === "xrp_only"
-                                                    ? "bg-amber-500 text-white shadow-md shadow-amber-200/40"
-                                                    : "bg-violet-600 text-white shadow-md shadow-violet-200/40"
+                                                : tab.key === "partial_match"
+                                                    ? "bg-sky-600 text-white shadow-md shadow-sky-200/40"
+                                                    : tab.key === "xrp_only"
+                                                        ? "bg-amber-500 text-white shadow-md shadow-amber-200/40"
+                                                        : "bg-violet-600 text-white shadow-md shadow-violet-200/40"
                                         : "bg-white text-slate-600 border border-slate-200 hover:border-slate-300 hover:bg-slate-50"
                                     }
                                 `}
@@ -195,22 +196,8 @@ export default function ConceptsResultsTable({ data, stats }: ConceptsResultsTab
                     })}
                 </div>
 
-                {/* Second row: convenio select + search + counter */}
+                {/* Second row: search + counter */}
                 <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-                    {/* Convenio filter */}
-                    {convenios.length > 0 && (
-                        <select
-                            value={selectedConvenio}
-                            onChange={(e) => setSelectedConvenio(e.target.value)}
-                            className="px-3 py-2 text-sm rounded-lg border border-slate-200 bg-white shadow-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400 transition-shadow"
-                        >
-                            <option value="__all__">Todos los convenios</option>
-                            {convenios.map((c) => (
-                                <option key={c} value={c}>{c}</option>
-                            ))}
-                        </select>
-                    )}
-
                     {/* Search */}
                     <div className="relative w-full sm:w-72">
                         <svg
@@ -273,14 +260,13 @@ export default function ConceptsResultsTable({ data, stats }: ConceptsResultsTab
                                     className={`table-row-hover ${
                                         row.status === "match"
                                             ? "bg-emerald-50/40"
-                                            : row.status === "xrp_only"
-                                                ? "bg-amber-50/40"
-                                                : "bg-violet-50/40"
+                                            : row.status === "partial_match"
+                                                ? "bg-sky-50/40"
+                                                : row.status === "xrp_only"
+                                                    ? "bg-amber-50/40"
+                                                    : "bg-violet-50/40"
                                     }`}
                                 >
-                                    <td className="px-4 py-2.5 text-sm text-slate-600 whitespace-nowrap">
-                                        {row.convenio || "-"}
-                                    </td>
                                     <td className="px-4 py-2.5 text-sm font-mono font-medium text-slate-700 whitespace-nowrap">
                                         {row.id_concepto_xrp || "-"}
                                     </td>
@@ -291,13 +277,13 @@ export default function ConceptsResultsTable({ data, stats }: ConceptsResultsTab
                                         {row.descripcion_meta4 || "-"}
                                     </td>
                                     <td className="px-4 py-2.5 text-center whitespace-nowrap">
-                                        <StatusBadge status={row.status} />
+                                        <StatusBadge status={row.status} similarity={row.similarity} />
                                     </td>
                                 </tr>
                             ))}
                             {visibleData.length === 0 && (
                                 <tr>
-                                    <td colSpan={5} className="px-4 py-12 text-center text-slate-400 text-sm">
+                                    <td colSpan={4} className="px-4 py-12 text-center text-slate-400 text-sm">
                                         No se encontraron conceptos con los filtros aplicados.
                                     </td>
                                 </tr>

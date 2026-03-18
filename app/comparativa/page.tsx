@@ -38,90 +38,204 @@ interface ApiResponse {
 
 interface ConceptResult {
     data: ConceptRow[];
-    stats: { total: number; match: number; xrp_only: number; meta4_only: number };
+    stats: { total: number; match: number; partial_match: number; xrp_only: number; meta4_only: number };
 }
 
 /* ─── Helpers: concept comparison ─── */
 
+/** Elimina tildes, artículos, preposiciones y normaliza a mayúsculas. */
 function normalize(s: string): string {
     return s
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
         .toUpperCase()
+        .replace(/\b(DE|DEL|LA|EL|LAS|LOS|EN|POR|AL|A)\b/g, "")
         .replace(/\s+/g, " ")
         .trim();
 }
 
-function findColumn(headers: string[], variants: string[]): string | null {
-    const normalized = variants.map((v) => normalize(v));
-    return headers.find((h) => normalized.includes(normalize(h))) ?? null;
+/** Separa "TEXTO (contenido)" en { main: "TEXTO", paren: "contenido" }. */
+function splitParentheses(s: string): { main: string; paren: string } {
+    const match = s.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+    if (match) return { main: match[1].trim(), paren: match[2].trim() };
+    return { main: s, paren: "" };
 }
 
-async function readExcelAsJson(file: File): Promise<Record<string, unknown>[]> {
+/** Stemming muy básico para español: quita plurales (s/es final). */
+function stem(word: string): string {
+    if (word.length > 4 && word.endsWith("ES")) return word.slice(0, -2);
+    if (word.length > 3 && word.endsWith("S")) return word.slice(0, -1);
+    return word;
+}
+
+/** Tokeniza y aplica stem a cada palabra. */
+function stemTokens(s: string): Set<string> {
+    return new Set(s.split(" ").filter(Boolean).map(stem));
+}
+
+function levenshtein(a: string, b: string): number {
+    const m = a.length, n = b.length;
+    const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            dp[i][j] = a[i - 1] === b[j - 1]
+                ? dp[i - 1][j - 1]
+                : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+        }
+    }
+    return dp[m][n];
+}
+
+/**
+ * Similitud combinada entre dos strings:
+ * 1. Si todas las palabras (stemmed) del más corto están en el más largo → containment match
+ * 2. Token overlap (stemmed) / max tokens
+ * 3. Levenshtein normalizado
+ * 4. Bonus si el contenido entre paréntesis también coincide
+ */
+function similarity(a: string, b: string): number {
+    const normA = normalize(a);
+    const normB = normalize(b);
+    if (normA === normB) return 1;
+
+    // Separar texto principal y paréntesis
+    const partsA = splitParentheses(normA);
+    const partsB = splitParentheses(normB);
+
+    const mainA = partsA.main || normA;
+    const mainB = partsB.main || normB;
+
+    const tokA = stemTokens(mainA);
+    const tokB = stemTokens(mainB);
+
+    if (tokA.size === 0 || tokB.size === 0) return 0;
+
+    // Containment: si todas las palabras del más corto están en el más largo → alto score
+    const [smaller, larger] = tokA.size <= tokB.size ? [tokA, tokB] : [tokB, tokA];
+    let containedCount = 0;
+    smaller.forEach((t) => { if (larger.has(t)) containedCount++; });
+    const containment = containedCount / smaller.size; // 1.0 si todas están contenidas
+
+    // Token overlap clásico (sobre el max)
+    let sharedCount = 0;
+    tokA.forEach((t) => { if (tokB.has(t)) sharedCount++; });
+    const tokenOverlap = sharedCount / Math.max(tokA.size, tokB.size);
+
+    // Levenshtein normalizado sobre el texto principal
+    const maxLen = Math.max(mainA.length, mainB.length);
+    const levSim = maxLen === 0 ? 1 : 1 - levenshtein(mainA, mainB) / maxLen;
+
+    // Score base: el mejor de los tres métodos
+    let score = Math.max(containment, tokenOverlap, levSim);
+
+    // Si containment es 100% (nombre corto totalmente incluido en el largo), mínimo 0.85
+    if (containment === 1) score = Math.max(score, 0.85);
+
+    // Bonus por coincidencia de paréntesis (si ambos tienen)
+    if (partsA.paren && partsB.paren) {
+        const parenTokA = stemTokens(partsA.paren);
+        const parenTokB = stemTokens(partsB.paren);
+        let parenShared = 0;
+        parenTokA.forEach((t) => { if (parenTokB.has(t)) parenShared++; });
+        const parenSim = parenShared / Math.max(parenTokA.size, parenTokB.size);
+        score = Math.min(1, score + parenSim * 0.1); // bonus de hasta 10%
+    }
+
+    return score;
+}
+
+const FUZZY_THRESHOLD = 0.6;
+
+/** Lee un Excel y devuelve arrays de [colA, colB] saltando la cabecera (fila 1). */
+async function readExcelColumns(file: File): Promise<[string, string][]> {
     const buffer = await file.arrayBuffer();
     const wb = XLSX.read(buffer, { type: "array" });
     const sheet = wb.Sheets[wb.SheetNames[0]];
-    return XLSX.utils.sheet_to_json(sheet, { defval: "" });
+    const raw: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+    // Saltar fila 0 (cabecera), leer columnas A y B por posición
+    return raw.slice(1)
+        .map((row): [string, string] => [String(row[0] ?? "").trim(), String(row[1] ?? "").trim()])
+        .filter(([a, b]) => a || b);
 }
 
 function compareConceptos(
-    xrpRows: Record<string, unknown>[],
-    meta4Rows: Record<string, unknown>[]
+    xrpData: [string, string][],
+    meta4Data: [string, string][]
 ): ConceptResult {
-    // Detect XRP columns
-    const xrpHeaders = xrpRows.length > 0 ? Object.keys(xrpRows[0]) : [];
-    const xrpIdCol = findColumn(xrpHeaders, ["ID_CONCEPTO", "id_concepto", "Id_Concepto", "ID CONCEPTO", "Codigo", "CODIGO"]);
-    const xrpNameCol = findColumn(xrpHeaders, ["NOMBRE_LARGO", "nombre_largo", "Nombre_Largo", "NOMBRE LARGO", "Descripcion", "DESCRIPCION", "Nombre"]);
-    const xrpConvCol = findColumn(xrpHeaders, ["Convenio", "CONVENIO", "convenio"]);
+    // XRP: col A = ID_CONCEPTO, col B = NOMBRE_LARGO
+    // Meta4: col A = Concepto (no se usa), col B = Descripción
 
-    // Detect Meta4 columns
-    const meta4Headers = meta4Rows.length > 0 ? Object.keys(meta4Rows[0]) : [];
-    const meta4DescCol = findColumn(meta4Headers, ["Descripcion", "DESCRIPCION", "Descripción", "descripcion", "Nombre", "NOMBRE"]);
-    const meta4ConvCol = findColumn(meta4Headers, ["Convenio", "CONVENIO", "convenio"]);
-
-    if (!xrpNameCol) throw new Error(`No se encontró la columna de nombre/descripción en el fichero XRP. Columnas disponibles: ${xrpHeaders.join(", ")}`);
-    if (!meta4DescCol) throw new Error(`No se encontró la columna de descripción en el fichero Meta4. Columnas disponibles: ${meta4Headers.join(", ")}`);
-
-    // Build Meta4 map: normalizedDesc → { descripcion, convenio }
-    interface Meta4Entry { descripcion: string; convenio: string; matched: boolean; }
-    const meta4Map = new Map<string, Meta4Entry[]>();
-
-    for (const row of meta4Rows) {
-        const desc = String(row[meta4DescCol] ?? "").trim();
+    // Build Meta4 list from col B (descripción)
+    interface Meta4Entry { descripcion: string; matched: boolean; }
+    const meta4Entries: Meta4Entry[] = [];
+    for (const [, desc] of meta4Data) {
         if (!desc) continue;
-        const conv = meta4ConvCol ? String(row[meta4ConvCol] ?? "").trim() : "";
-        const key = normalize(desc);
-        if (!meta4Map.has(key)) meta4Map.set(key, []);
-        meta4Map.get(key)!.push({ descripcion: desc, convenio: conv, matched: false });
+        meta4Entries.push({ descripcion: desc, matched: false });
+    }
+
+    // Build normalized map for exact matching
+    const meta4ByKey = new Map<string, Meta4Entry[]>();
+    for (const entry of meta4Entries) {
+        const key = normalize(entry.descripcion);
+        if (!meta4ByKey.has(key)) meta4ByKey.set(key, []);
+        meta4ByKey.get(key)!.push(entry);
     }
 
     const results: ConceptRow[] = [];
 
-    // Match XRP → Meta4
-    for (const row of xrpRows) {
-        const nombre = String(row[xrpNameCol] ?? "").trim();
+    // Track XRP rows that didn't get an exact match (for fuzzy pass)
+    interface UnmatchedXrp { nombre: string; idConcepto: string; }
+    const unmatchedXrp: UnmatchedXrp[] = [];
+
+    // ── Pass 1: Exact match (normalized) ──
+    for (const [idConcepto, nombre] of xrpData) {
         if (!nombre) continue;
-        const idConcepto = xrpIdCol ? String(row[xrpIdCol] ?? "").trim() : "";
-        const convenio = xrpConvCol ? String(row[xrpConvCol] ?? "").trim() : "";
         const key = normalize(nombre);
 
-        const meta4Entries = meta4Map.get(key);
-        if (meta4Entries && meta4Entries.length > 0) {
-            // Take first unmatched, or first if all matched
-            const entry = meta4Entries.find((e) => !e.matched) ?? meta4Entries[0];
+        const candidates = meta4ByKey.get(key);
+        if (candidates && candidates.length > 0) {
+            const entry = candidates.find((e) => !e.matched) ?? candidates[0];
             entry.matched = true;
             results.push({
-                convenio: convenio || entry.convenio,
                 id_concepto_xrp: idConcepto,
                 nombre_xrp: nombre,
                 descripcion_meta4: entry.descripcion,
                 status: "match",
             });
         } else {
+            unmatchedXrp.push({ nombre, idConcepto });
+        }
+    }
+
+    // ── Pass 2: Fuzzy match for unmatched XRP rows ──
+    for (const xrp of unmatchedXrp) {
+        let bestEntry: Meta4Entry | null = null;
+        let bestScore = 0;
+
+        for (const entry of meta4Entries) {
+            if (entry.matched) continue;
+            const score = similarity(xrp.nombre, entry.descripcion);
+            if (score > bestScore) {
+                bestScore = score;
+                bestEntry = entry;
+            }
+        }
+
+        if (bestEntry && bestScore >= FUZZY_THRESHOLD) {
+            bestEntry.matched = true;
             results.push({
-                convenio,
-                id_concepto_xrp: idConcepto,
-                nombre_xrp: nombre,
+                id_concepto_xrp: xrp.idConcepto,
+                nombre_xrp: xrp.nombre,
+                descripcion_meta4: bestEntry.descripcion,
+                status: "partial_match",
+                similarity: Math.round(bestScore * 100),
+            });
+        } else {
+            results.push({
+                id_concepto_xrp: xrp.idConcepto,
+                nombre_xrp: xrp.nombre,
                 descripcion_meta4: "",
                 status: "xrp_only",
             });
@@ -129,23 +243,21 @@ function compareConceptos(
     }
 
     // Unmatched Meta4
-    meta4Map.forEach((entries) => {
-        for (const entry of entries) {
-            if (!entry.matched) {
-                results.push({
-                    convenio: entry.convenio,
-                    id_concepto_xrp: "",
-                    nombre_xrp: "",
-                    descripcion_meta4: entry.descripcion,
-                    status: "meta4_only",
-                });
-            }
+    for (const entry of meta4Entries) {
+        if (!entry.matched) {
+            results.push({
+                id_concepto_xrp: "",
+                nombre_xrp: "",
+                descripcion_meta4: entry.descripcion,
+                status: "meta4_only",
+            });
         }
-    });
+    }
 
     const stats = {
         total: results.length,
         match: results.filter((r) => r.status === "match").length,
+        partial_match: results.filter((r) => r.status === "partial_match").length,
         xrp_only: results.filter((r) => r.status === "xrp_only").length,
         meta4_only: results.filter((r) => r.status === "meta4_only").length,
     };
@@ -260,11 +372,11 @@ export default function Home() {
         setConceptResult(null);
 
         try {
-            const [xrpRows, meta4Rows] = await Promise.all([
-                readExcelAsJson(conceptFileXrp),
-                readExcelAsJson(conceptFileMeta4),
+            const [xrpData, meta4Data] = await Promise.all([
+                readExcelColumns(conceptFileXrp),
+                readExcelColumns(conceptFileMeta4),
             ]);
-            const result = compareConceptos(xrpRows, meta4Rows);
+            const result = compareConceptos(xrpData, meta4Data);
             setConceptResult(result);
         } catch (err) {
             setConceptError(err instanceof Error ? err.message : "Error inesperado al procesar los ficheros");
