@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
 import numpy as np
@@ -10,12 +11,28 @@ import os
 import re
 import unicodedata
 import datetime as dt
+import difflib
+import traceback
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from typing import List
 import google.generativeai as genai
 
 app = FastAPI()
+_POBLACIONES_CACHE = None
+_GEOGRAPHY_AI_CACHE = {}
+_GEMINI_MODEL_CACHE = None
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def clean_dni(value) -> str:
@@ -474,21 +491,447 @@ def _normalize_name_for_checks(value: str) -> str:
     return _normalize_header(value)
 
 
+def _clean_code(value) -> str:
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text.endswith(".0") and text[:-2].isdigit():
+        text = text[:-2]
+    return text
+
+
+def _pad_code(value, width: int) -> str:
+    code = _clean_code(value)
+    if not code:
+        return ""
+    if code.isdigit():
+        return code.zfill(width)
+    return code
+
+
+def _split_semicolon_name(value) -> str:
+    text = _clean_code(value)
+    if ";" not in text:
+        return text
+    return text.split(";", 1)[1].strip()
+
+
+def _geography_name_variants(value: str) -> set[str]:
+    text = str(value or "").strip()
+    if not text:
+        return set()
+
+    variants = {text}
+
+    lowered = text.lower()
+    lowered = lowered.replace("l'", "").replace("d'", "").replace("de l'", " ")
+    variants.add(lowered)
+
+    # Expand frequent municipality abbreviations seen in payroll exports.
+    expanded = lowered
+    replacements = {
+        "s. ": "san ",
+        "s ": "san ",
+        "seb.": "sebastian",
+        "seb ": "sebastian ",
+        "sta.": "santa",
+        "sta ": "santa ",
+        "sto.": "santo",
+        "sto ": "santo ",
+    }
+    for source, target in replacements.items():
+        expanded = expanded.replace(source, target)
+    expanded = re.sub(r"\s+", " ", expanded).strip()
+    variants.add(expanded)
+
+    simplified = lowered
+    for token in [" de ", " del ", " de la ", " de las ", " de los ", " la ", " las ", " los ", " el "]:
+        simplified = simplified.replace(token, " ")
+    simplified = re.sub(r"\s+", " ", simplified).strip()
+    variants.add(simplified)
+
+    simplified_expanded = expanded
+    for token in [" de ", " del ", " de la ", " de las ", " de los ", " la ", " las ", " los ", " el "]:
+        simplified_expanded = simplified_expanded.replace(token, " ")
+    simplified_expanded = re.sub(r"\s+", " ", simplified_expanded).strip()
+    variants.add(simplified_expanded)
+
+    no_spaces = simplified.replace(" ", "")
+    if no_spaces:
+        variants.add(no_spaces)
+
+    no_spaces_expanded = simplified_expanded.replace(" ", "")
+    if no_spaces_expanded:
+        variants.add(no_spaces_expanded)
+
+    return {variant for variant in variants if variant.strip()}
+
+
+def _load_poblaciones_lookup():
+    global _POBLACIONES_CACHE
+    if _POBLACIONES_CACHE is not None:
+        return _POBLACIONES_CACHE
+
+    base_dir = os.path.dirname(__file__)
+    path = os.path.join(base_dir, "..", "public", "POBLACIONES.xlsx")
+    path = os.path.abspath(path)
+
+    if not os.path.exists(path):
+        _POBLACIONES_CACHE = {
+            "localities": {},
+            "country_aliases": {"espana": "011", "spain": "011", "es": "011"},
+        }
+        return _POBLACIONES_CACHE
+
+    df = pd.read_excel(path, engine="openpyxl")
+    df.columns = [str(col).strip() if pd.notna(col) else "" for col in df.columns]
+
+    records_by_locality = {}
+    province_entries = {}
+    localities_by_province = {}
+    for _, row in df.iterrows():
+        country_code = _pad_code(row.iloc[0] if len(row) > 0 else "", 3)
+        province_code = _pad_code(row.iloc[1] if len(row) > 1 else "", 2)
+        locality_with_prefix = row.iloc[2] if len(row) > 2 else ""
+        population_code = _pad_code(row.iloc[3] if len(row) > 3 else "", 3)
+        population_with_prefix = row.iloc[4] if len(row) > 4 else ""
+        locality_name = str(row.iloc[5]).strip() if len(row) > 5 and pd.notna(row.iloc[5]) else ""
+        cp_value = _clean_code(row.iloc[6] if len(row) > 6 else "")
+        province_name = _split_semicolon_name(locality_with_prefix)
+
+        candidate_names = {
+            locality_name,
+            _split_semicolon_name(locality_with_prefix),
+            _split_semicolon_name(population_with_prefix),
+        }
+        entry = {
+            "country_code": country_code,
+            "province_code": province_code,
+            "population_code": population_code,
+            "province_name": province_name,
+            "locality_name": locality_name,
+            "cp": cp_value,
+        }
+        province_key = _normalize_header(province_name)
+        if province_key and province_key not in province_entries:
+            province_entries[province_key] = {
+                "province_code": province_code,
+                "province_name": province_name,
+                "country_code": country_code,
+            }
+        if province_code and locality_name:
+            localities_by_province.setdefault(province_code, {})
+            localities_by_province[province_code][_normalize_header(locality_name)] = entry
+        for name in candidate_names:
+            for variant in _geography_name_variants(name):
+                norm = _normalize_header(variant)
+                if not norm:
+                    continue
+                records_by_locality.setdefault(norm, []).append(entry)
+
+    provinces_by_name = {}
+    countries_by_name = {"espana": "011", "spain": "011", "es": "011"}
+    for entries in records_by_locality.values():
+        for entry in entries:
+            province_norm = _normalize_header(entry["province_name"])
+            if province_norm and province_norm not in provinces_by_name:
+                provinces_by_name[province_norm] = entry["province_code"]
+
+    _POBLACIONES_CACHE = {
+        "localities": records_by_locality,
+        "province_aliases": provinces_by_name,
+        "country_aliases": countries_by_name,
+        "province_entries": province_entries,
+        "localities_by_province": localities_by_province,
+    }
+    return _POBLACIONES_CACHE
+
+
+def _pick_locality_entry(locality_value, province_hint=""):
+    lookup = _load_poblaciones_lookup()
+    province_hint_clean = _clean_code(province_hint)
+
+    for variant in _geography_name_variants(locality_value):
+        norm_locality = _normalize_header(variant)
+        if not norm_locality:
+            continue
+
+        matches = lookup["localities"].get(norm_locality, [])
+        if not matches:
+            continue
+
+        if province_hint_clean:
+            for match in matches:
+                if match["province_code"] == province_hint_clean:
+                    return match
+        return matches[0]
+
+    normalized_variants = []
+    for variant in _geography_name_variants(locality_value):
+        norm = _normalize_header(variant)
+        if norm:
+            normalized_variants.append(norm)
+
+    if not normalized_variants:
+        return None
+
+    if province_hint_clean and province_hint_clean in lookup["localities_by_province"]:
+        candidate_keys = list(lookup["localities_by_province"][province_hint_clean].keys())
+        candidate_map = lookup["localities_by_province"][province_hint_clean]
+    else:
+        candidate_keys = list(lookup["localities"].keys())
+        candidate_map = {key: entries[0] for key, entries in lookup["localities"].items() if entries}
+
+    for norm_variant in normalized_variants:
+        close = difflib.get_close_matches(norm_variant, candidate_keys, n=1, cutoff=0.82)
+        if close:
+            return candidate_map.get(close[0])
+    return None
+
+
+def _get_gemini_text(prompt: str) -> str:
+    global _GEMINI_MODEL_CACHE
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return ""
+
+    genai.configure(api_key=api_key)
+    model_candidates = []
+    if _GEMINI_MODEL_CACHE is False:
+        return ""
+    if isinstance(_GEMINI_MODEL_CACHE, str) and _GEMINI_MODEL_CACHE:
+        model_candidates.append(_GEMINI_MODEL_CACHE)
+    else:
+        env_model = os.getenv("GEMINI_MODEL")
+        if env_model:
+            model_candidates.append(env_model)
+        model_candidates.extend([
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+        ])
+
+    last_error = None
+    for model_name in model_candidates:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            text = response.text or ""
+            if text:
+                _GEMINI_MODEL_CACHE = model_name
+                return text
+        except Exception as e:
+            last_error = e
+            continue
+
+    if last_error:
+        print(f"[gemini] model error: {last_error}")
+    _GEMINI_MODEL_CACHE = False
+    return ""
+
+
+def _get_gemini_json(prompt: str):
+    text = _get_gemini_text(prompt)
+    if not text:
+        return None
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+
+    try:
+        data = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _top_candidate_names(raw_value, candidate_names, limit: int = 12) -> List[str]:
+    normalized_to_display = {}
+    for name in candidate_names:
+        norm = _normalize_header(name)
+        if norm and norm not in normalized_to_display:
+            normalized_to_display[norm] = name
+
+    raw_norm = _normalize_header(str(raw_value or ""))
+    if not raw_norm:
+        return []
+
+    matches = difflib.get_close_matches(raw_norm, list(normalized_to_display.keys()), n=limit, cutoff=0.45)
+    return [normalized_to_display[m] for m in matches]
+
+
+def _should_try_geography_ai(raw_value) -> bool:
+    text = str(raw_value or "").strip()
+    if not text:
+        return False
+
+    norm = _normalize_header(text)
+    if not norm:
+        return False
+    if norm in {"desconocido", "unknown", "na", "n/a", "null", "none", "nan"}:
+        return False
+    if text.isdigit():
+        return False
+    return True
+
+
+def _resolve_candidate_with_gemini(kind: str, raw_value, candidate_names: List[str], extra_context: str = "") -> str:
+    cache_key = f"{kind}:{_normalize_header(str(raw_value or ''))}:{extra_context}"
+    if cache_key in _GEOGRAPHY_AI_CACHE:
+        return _GEOGRAPHY_AI_CACHE[cache_key]
+
+    if not candidate_names or not _should_try_geography_ai(raw_value):
+        _GEOGRAPHY_AI_CACHE[cache_key] = ""
+        return ""
+
+    prompt = (
+        f"You are matching a Spanish {kind} name to an official candidate list.\n"
+        "Return ONLY valid JSON with this shape: {\"match\": \"exact candidate from the list or empty string\"}.\n"
+        "Pick the closest equivalent even if spelling, language, accents, or old/new naming differs.\n"
+        "If no candidate is credible, return an empty string.\n\n"
+        f"Raw value: {raw_value}\n"
+        f"Context: {extra_context}\n"
+        f"Candidates: {candidate_names}\n"
+    )
+    data = _get_gemini_json(prompt) or {}
+    match = str(data.get("match", "")).strip()
+    if match not in candidate_names:
+        match = ""
+    _GEOGRAPHY_AI_CACHE[cache_key] = match
+    return match
+
+
+def _apply_geography_codes(out: pd.DataFrame):
+    lookup = _load_poblaciones_lookup()
+    geography_groups = [
+        ("DesPais", "DesProvincia", "DesPoblacion"),
+    ]
+
+    for country_col, province_col, population_col in geography_groups:
+        if population_col not in out.columns:
+            continue
+
+        for idx in out.index:
+            try:
+                country_value = out.at[idx, country_col] if country_col in out.columns else ""
+                province_value = out.at[idx, province_col] if province_col in out.columns else ""
+                population_value = out.at[idx, population_col]
+
+                entry = _pick_locality_entry(population_value, province_value)
+                if entry:
+                    if country_col in out.columns:
+                        out.at[idx, country_col] = entry["country_code"]
+                    if province_col in out.columns:
+                        out.at[idx, province_col] = entry["province_code"]
+                    out.at[idx, population_col] = entry["population_code"]
+                    continue
+
+                norm_country = _normalize_header(str(country_value or ""))
+                if country_col in out.columns and norm_country in lookup["country_aliases"]:
+                    out.at[idx, country_col] = lookup["country_aliases"][norm_country]
+
+                norm_province = _normalize_header(str(province_value or ""))
+                if province_col in out.columns and norm_province in lookup["province_aliases"]:
+                    out.at[idx, province_col] = lookup["province_aliases"][norm_province]
+
+                resolved_province_code = _clean_code(out.at[idx, province_col]) if province_col in out.columns else ""
+                if province_col in out.columns and not resolved_province_code and str(province_value or "").strip():
+                    province_candidates = [entry["province_name"] for entry in lookup["province_entries"].values()]
+                    best_province = _resolve_candidate_with_gemini("province", province_value, province_candidates)
+                    province_key = _normalize_header(best_province)
+                    province_entry = lookup["province_entries"].get(province_key)
+                    if province_entry:
+                        out.at[idx, province_col] = province_entry["province_code"]
+                        resolved_province_code = province_entry["province_code"]
+                        if country_col in out.columns and not _clean_code(out.at[idx, country_col]):
+                            out.at[idx, country_col] = province_entry["country_code"]
+
+                if not _pick_locality_entry(population_value, resolved_province_code):
+                    locality_candidates_map = lookup["localities_by_province"].get(resolved_province_code, {})
+                    if not locality_candidates_map:
+                        locality_candidates_map = {
+                            norm: entries[0]
+                            for norm, entries in lookup["localities"].items()
+                            if entries
+                        }
+                    locality_candidates = [entry["locality_name"] for entry in locality_candidates_map.values()]
+                    best_locality = _resolve_candidate_with_gemini(
+                        "locality",
+                        population_value,
+                        _top_candidate_names(population_value, locality_candidates) or locality_candidates[:12],
+                        extra_context=f"province_code={resolved_province_code or 'unknown'}",
+                    )
+                    if best_locality:
+                        locality_norm = _normalize_header(best_locality)
+                        locality_entry = locality_candidates_map.get(locality_norm)
+                        if locality_entry:
+                            if country_col in out.columns:
+                                out.at[idx, country_col] = locality_entry["country_code"]
+                            if province_col in out.columns:
+                                out.at[idx, province_col] = locality_entry["province_code"]
+                            out.at[idx, population_col] = locality_entry["population_code"]
+                            continue
+
+                population_as_code = _pad_code(population_value, 3)
+                if population_as_code and population_as_code.isdigit() and len(population_as_code) == 3:
+                    out.at[idx, population_col] = population_as_code
+
+                if country_col in out.columns:
+                    out.at[idx, country_col] = _pad_code(out.at[idx, country_col], 3) or out.at[idx, country_col]
+                if province_col in out.columns:
+                    out.at[idx, province_col] = _pad_code(out.at[idx, province_col], 2) or out.at[idx, province_col]
+            except Exception as row_error:
+                print(f"[sgel] geography row error idx={idx} country_col={country_col} province_col={province_col} population_col={population_col}: {row_error}")
+                continue
+
+    birth_columns = ["DesPaisNacim", "DesProvinciaNacim", "DesPoblacionNacim"]
+    base_columns = ["DesPais", "DesProvincia", "DesPoblacion"]
+    if all(col in out.columns for col in base_columns) and all(col in out.columns for col in birth_columns):
+        out["DesPaisNacim"] = out["DesPais"]
+        out["DesProvinciaNacim"] = out["DesProvincia"]
+        out["DesPoblacionNacim"] = out["DesPoblacion"]
+
+
+def _collect_geography_issues(out: pd.DataFrame):
+    geography_specs = [
+        ("DesPais", 3),
+        ("DesProvincia", 2),
+        ("DesPoblacion", 3),
+        ("DesPaisNacim", 3),
+        ("DesProvinciaNacim", 2),
+        ("DesPoblacionNacim", 3),
+    ]
+    issues = []
+
+    for col, expected_width in geography_specs:
+        if col not in out.columns:
+            continue
+
+        for idx, value in out[col].items():
+            if pd.isna(value):
+                continue
+            code = _clean_code(value)
+            if code.isdigit() and len(code) == expected_width:
+                continue
+            issues.append({
+                "fila": int(idx) + 1,
+                "columna": col,
+                "valor": value,
+                "motivo": f"No se pudo convertir {col} a codigo",
+            })
+
+    return issues
+
+
 def _map_headers_with_gemini(source_headers: List[str], target_headers: List[str]) -> dict:
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="Missing GOOGLE_API_KEY or GEMINI_API_KEY for Gemini.")
-
-    genai.configure(api_key=api_key)
-    model_candidates = []
-    env_model = os.getenv("GEMINI_MODEL")
-    if env_model:
-        model_candidates.append(env_model)
-    model_candidates.extend([
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-1.0-pro",
-    ])
 
     prompt = (
         "You map Excel headers to target headers.\n"
@@ -498,22 +941,8 @@ def _map_headers_with_gemini(source_headers: List[str], target_headers: List[str
         f"Target headers: {target_headers}\n"
     )
 
-    text = ""
-    last_error = None
-    for model_name in model_candidates:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            text = response.text or ""
-            if text:
-                break
-        except Exception as e:
-            last_error = e
-            continue
-
+    text = _get_gemini_text(prompt)
     if not text:
-        if last_error:
-            print(f"[gemini] model error: {last_error}")
         return {}
 
     start = text.find("{")
@@ -581,7 +1010,9 @@ async def generate_sgel_r(file: UploadFile = File(...)):
                 else:
                     out[target] = pd.NA
 
-        issues = []
+        _apply_geography_codes(out)
+
+        issues = _collect_geography_issues(out)
         for col in out.columns:
             meta = meta_map.get(col, {})
             expected_type = str(meta.get("type", "string")).lower()
@@ -644,5 +1075,7 @@ async def generate_sgel_r(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
+        print("[sgel] fatal error while generating R")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error generando SGEL R: {str(e)}")
         

@@ -1,8 +1,46 @@
 ﻿"use client";
 
-import { useRef, useState, DragEvent, ChangeEvent, useMemo } from "react";
+import { useRef, useState, DragEvent, ChangeEvent, useMemo, useDeferredValue } from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
+import RGeneratorIssues from "@/components/RGeneratorIssues";
+
+const API_BASE_URL =
+    process.env.NODE_ENV === "development" ? "http://127.0.0.1:8000" : "";
+
+const GEOGRAPHY_CODE_RULES = [
+    { column: "DesPais", width: 3 },
+    { column: "DesProvincia", width: 2 },
+    { column: "DesPoblacion", width: 3 },
+    { column: "DesPaisNacim", width: 3 },
+    { column: "DesProvinciaNacim", width: 2 },
+    { column: "DesPoblacionNacim", width: 3 },
+];
+
+function cleanCode(value: string) {
+    const text = String(value ?? "").trim();
+    if (!text) return "";
+    return text.endsWith(".0") && /^\d+\.0$/.test(text) ? text.slice(0, -2) : text;
+}
+
+function getIssueRowIds(rows: Record<string, string>[]) {
+    const affectedRows = new Set<number>();
+
+    rows.forEach((row) => {
+        const rowId = Number(row.__rowId);
+        for (const rule of GEOGRAPHY_CODE_RULES) {
+            if (!(rule.column in row)) continue;
+            const code = cleanCode(row[rule.column]);
+            if (!code) continue;
+            if (!(code.length === rule.width && /^\d+$/.test(code))) {
+                affectedRows.add(rowId);
+                break;
+            }
+        }
+    });
+
+    return affectedRows;
+}
 
 export default function RGeneratorPage() {
     const [file, setFile] = useState<File | null>(null);
@@ -14,7 +52,10 @@ export default function RGeneratorPage() {
     const [previewRows, setPreviewRows] = useState<Record<string, string>[]>([]);
     const [filters, setFilters] = useState<Record<string, string>>({});
     const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+    const [issueRows, setIssueRows] = useState<Set<number>>(new Set());
+    const [issueSummary, setIssueSummary] = useState<string[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const deferredFilters = useDeferredValue(filters);
 
     const onFile = (f: File) => {
         setFile(f);
@@ -24,6 +65,8 @@ export default function RGeneratorPage() {
         setPreviewRows([]);
         setFilters({});
         setSelectedRows(new Set());
+        setIssueRows(new Set());
+        setIssueSummary([]);
     };
 
     const onFileChange = (e: ChangeEvent<HTMLInputElement>) => {
@@ -60,14 +103,19 @@ export default function RGeneratorPage() {
             const formData = new FormData();
             formData.append("file", file);
 
-            const res = await fetch("/api/generate-sgel-r", {
+            const res = await fetch(`${API_BASE_URL}/api/generate-sgel-r`, {
                 method: "POST",
                 body: formData,
             });
 
             if (!res.ok) {
-                const errBody = await res.json().catch(() => null);
-                throw new Error(errBody?.detail || `Error del servidor (${res.status})`);
+                const errJson = await res.json().catch(() => null);
+                const errText = errJson ? "" : await res.text().catch(() => "");
+                throw new Error(
+                    errJson?.detail ||
+                    errText ||
+                    `Error del servidor (${res.status})`
+                );
             }
 
             const blob = await res.blob();
@@ -88,7 +136,36 @@ export default function RGeneratorPage() {
             setPreviewColumns(columns);
             setPreviewRows(data);
             setFilters({});
-            setSelectedRows(new Set());
+            const detectedIssueRows = getIssueRowIds(data);
+            setSelectedRows(new Set(detectedIssueRows));
+            const validationSheet = workbook.Sheets["Validaciones"];
+            if (validationSheet) {
+                const validationRows = XLSX.utils.sheet_to_json(validationSheet, { defval: "" }) as Array<Record<string, string | number>>;
+                const affectedRows = new Set<number>();
+                validationRows.forEach((validation) => {
+                    const fila = Number(validation.fila);
+                    if (!Number.isNaN(fila) && fila > 0) {
+                        affectedRows.add(fila - 1);
+                    }
+                });
+                const mergedRows = new Set<number>([...detectedIssueRows, ...affectedRows]);
+                setIssueRows(mergedRows);
+                setSelectedRows(new Set(mergedRows));
+                const visibleLines = Array.from(affectedRows)
+                    .sort((a, b) => a - b)
+                    .map((rowId) => rowId + 1);
+                const mergedLines = Array.from(mergedRows)
+                    .sort((a, b) => a - b)
+                    .map((rowId) => String(rowId + 1));
+                setIssueSummary(mergedLines);
+            } else {
+                setIssueRows(detectedIssueRows);
+                setIssueSummary(
+                    Array.from(detectedIssueRows)
+                        .sort((a, b) => a - b)
+                        .map((rowId) => String(rowId + 1))
+                );
+            }
 
             setSuccess(true);
         } catch (err) {
@@ -102,12 +179,29 @@ export default function RGeneratorPage() {
         if (!previewRows.length) return [];
         return previewRows.filter((row) =>
             previewColumns.every((col) => {
-                const value = filters[col];
+                const value = deferredFilters[col];
                 if (!value) return true;
                 return String(row[col] ?? "").toLowerCase().includes(value.toLowerCase());
             })
         );
-    }, [previewRows, previewColumns, filters]);
+    }, [previewRows, previewColumns, deferredFilters]);
+
+    const visibleRowIds = useMemo(
+        () => filteredRows.map((row) => Number(row.__rowId)),
+        [filteredRows]
+    );
+
+    const visibleIssueRowIds = useMemo(
+        () => visibleRowIds.filter((id) => issueRows.has(id)),
+        [visibleRowIds, issueRows]
+    );
+
+    const bulkSelectableRowIds = visibleIssueRowIds.length > 0 ? visibleIssueRowIds : visibleRowIds;
+
+    const allVisibleSelected = useMemo(
+        () => bulkSelectableRowIds.length > 0 && bulkSelectableRowIds.every((id) => selectedRows.has(id)),
+        [bulkSelectableRowIds, selectedRows]
+    );
 
     const handleDownloadFiltered = () => {
         if (!previewColumns.length) return;
@@ -132,13 +226,11 @@ export default function RGeneratorPage() {
 
     const toggleAllVisible = () => {
         setSelectedRows((prev) => {
-            const visibleIds = filteredRows.map((row) => Number(row.__rowId));
-            const allSelected = visibleIds.every((id) => prev.has(id));
             const next = new Set(prev);
-            if (allSelected) {
-                visibleIds.forEach((id) => next.delete(id));
+            if (allVisibleSelected) {
+                bulkSelectableRowIds.forEach((id) => next.delete(id));
             } else {
-                visibleIds.forEach((id) => next.add(id));
+                bulkSelectableRowIds.forEach((id) => next.add(id));
             }
             return next;
         });
@@ -280,6 +372,8 @@ export default function RGeneratorPage() {
                 </section>
 
                 {previewColumns.length > 0 && (
+                    <>
+                    <RGeneratorIssues issueSummary={issueSummary} />
                     <section className="rounded-3xl border border-slate-200 bg-white/80 shadow-lg animate-fade-in opacity-0" style={{ animationDelay: "220ms" }}>
                         <div className="px-6 py-5 border-b border-slate-200 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <div>
@@ -293,6 +387,9 @@ export default function RGeneratorPage() {
                                 >
                                     Descargar selección
                                 </button>
+                                <div className="text-xs text-slate-500 bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-full">
+                                    Seleccionadas: <span className="font-semibold text-slate-700">{selectedRows.size}</span>
+                                </div>
                                 <div className="text-xs text-slate-500 bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-full">
                                     Filas visibles: <span className="font-semibold text-slate-700">{filteredRows.length}</span>
                                 </div>
@@ -309,9 +406,10 @@ export default function RGeneratorPage() {
                                                     <span className="text-xs uppercase tracking-wide text-slate-500">Sel</span>
                                                     <button
                                                         onClick={toggleAllVisible}
+                                                        type="button"
                                                         className="w-9 rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-50 text-center"
                                                     >
-                                                        {filteredRows.length > 0 && filteredRows.every((row) => selectedRows.has(Number(row.__rowId))) ? "None" : "All"}
+                                                        {allVisibleSelected ? "None" : "All"}
                                                     </button>
                                                 </div>
                                             </th>
@@ -333,7 +431,15 @@ export default function RGeneratorPage() {
                                     </thead>
                                     <tbody className="divide-y divide-slate-100">
                                         {filteredRows.map((row) => (
-                                            <tr key={row.__rowId} className="hover:bg-slate-50 transition-colors">
+                                            <tr
+                                                key={row.__rowId}
+                                                id={`preview-row-${Number(row.__rowId) + 1}`}
+                                                className={`transition-colors ${
+                                                    issueRows.has(Number(row.__rowId))
+                                                        ? "bg-amber-50 hover:bg-amber-100/70"
+                                                        : "hover:bg-slate-50"
+                                                } scroll-mt-32`}
+                                            >
                                                 <td className="px-3 py-2">
                                                     <input
                                                         type="checkbox"
@@ -361,6 +467,7 @@ export default function RGeneratorPage() {
                             </div>
                         </div>
                     </section>
+                    </>
                 )}
             </div>
         </main>
