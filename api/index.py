@@ -112,27 +112,33 @@ def read_excel_guess_header(bytes_data, candidates, required_columns):
     raise HTTPException(status_code=400, detail="No se encontró la cabecera esperada en el Excel con los offsets probados.")
 
 
+def _normalize_text(text: str) -> str:
+    if text is None:
+        return ""
+    return str(text).upper().strip().replace('_', '').replace('.', '').replace(' ', '').replace('-', '')
+
+
 def find_column(df, possible_names, required=False, exact=False):
     """
     Find a column in df based on a list of possible names.
-    If exact=True, it checks for case-insensitive exact match.
-    If exact=False, it checks if any of the possible names are a substring of the column name.
+    If exact=True, it checks for normalized exact match.
+    If exact=False, it checks if any of the normalized possible names are contained in normalized column name or viceversa.
     """
-    cols_upper = {c: c.upper() for c in df.columns}
+    cols_norm = {orig_col: _normalize_text(orig_col) for orig_col in df.columns}
     for p in possible_names:
-        p_up = p.upper()
-        for orig_col, up_col in cols_upper.items():
+        p_norm = _normalize_text(p)
+        for orig_col, norm_col in cols_norm.items():
             if exact:
-                if p_up == up_col:
+                if p_norm == norm_col:
                     return orig_col
             else:
-                if p_up in up_col:
+                if p_norm in norm_col or norm_col in p_norm:
                     return orig_col
-    
+
     if required:
         available = list(df.columns)
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"No se encontró una columna válida para {possible_names[0]}. Las columnas disponibles son: {available}"
         )
     return None
