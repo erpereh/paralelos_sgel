@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -65,9 +65,51 @@ def safe_float(val):
     if pd.isna(val):
         return 0.0
     try:
+        if isinstance(val, str):
+            s = val.strip().replace('.', '').replace(',', '.')
+            if s == "":
+                return 0.0
+            return float(s)
         return float(val)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _normalize_column(col_name: str) -> str:
+    return str(col_name).strip().upper().replace('_', '').replace('.', '').replace(' ', '')
+
+
+def _column_matches(col_name: str, possible_names) -> bool:
+    norm = _normalize_column(col_name)
+    for p in possible_names:
+        if _normalize_column(p) in norm or norm in _normalize_column(p):
+            return True
+    return False
+
+
+def read_excel_guess_header(bytes_data, candidates, required_columns):
+    """Try reading same file with several skiprows until required columns are found."""
+    last_exception = None
+    for skip in candidates:
+        try:
+            df = pd.read_excel(BytesIO(bytes_data), skiprows=skip, engine="openpyxl")
+            df.columns = df.columns.astype(str).str.strip().str.replace('\n', ' ').str.replace('\r', '')
+
+            ok = True
+            for req in required_columns:
+                if not any(_column_matches(col, req) for col in df.columns):
+                    ok = False
+                    break
+            if ok:
+                return df
+
+        except Exception as exc:
+            last_exception = exc
+            continue
+
+    if last_exception:
+        raise HTTPException(status_code=400, detail=f"No se pudo leer el Excel con los offsets ({candidates}): {last_exception}")
+    raise HTTPException(status_code=400, detail="No se encontró la cabecera esperada en el Excel con los offsets probados.")
 
 
 def find_column(df, possible_names, required=False, exact=False):
@@ -102,16 +144,22 @@ def find_column(df, possible_names, required=False, exact=False):
 async def process_payroll(
     file_xrp: UploadFile = File(...),
     file_meta4: UploadFile = File(...),
+    match_by: str = Form("dni"),  # accepted: 'dni' or 'id'
 ):
     try:
         # ==========================================
         # 1. READ AND CLEAN XRP
         # ==========================================
         xrp_bytes = await file_xrp.read()
-        df_xrp = pd.read_excel(BytesIO(xrp_bytes), skiprows=4, engine="openpyxl")
-        
-        # Limpieza radical de nombres de columnas
-        df_xrp.columns = df_xrp.columns.astype(str).str.strip().str.replace('\n', ' ').str.replace('\r', '')
+        df_xrp = read_excel_guess_header(
+            xrp_bytes,
+            [4, 3, 2, 1, 0],
+            required_columns=[
+                ["Trabajador", "DNI trabajador", "DNI"],
+                ["Nombre trabajador", "Nombre"],
+                ["Total Devengado", "Devengos"],
+            ],
+        )
 
         # Buscar columnas XRP
         XRP_COL_ID = find_column(df_xrp, ["Trabajador", "DNI trabajador", "DNI"], required=True)
@@ -151,13 +199,21 @@ async def process_payroll(
         # 2. READ AND CLEAN META4
         # ==========================================
         meta4_bytes = await file_meta4.read()
-        df_meta4 = pd.read_excel(BytesIO(meta4_bytes), skiprows=3, engine="openpyxl")
-        
-        # Limpieza radical de nombres de columnas
-        df_meta4.columns = df_meta4.columns.astype(str).str.strip().str.replace('\n', ' ').str.replace('\r', '')
+        df_meta4 = read_excel_guess_header(
+            meta4_bytes,
+            [3, 2, 1, 0],
+            required_columns=[
+                ["Empleado", "DNI", "Trabajador"],
+                ["Nombre"],
+                ["Total_Devengos", "Bruto", "Devengos"],
+                ["Total.Retenido", "Deducciones", "Retenciones"],
+                ["Liquido", "Neto", "Percibir"],
+            ],
+        )
 
         # Buscar columnas Meta4
-        META4_COL_ID = find_column(df_meta4, ["Empleado", "DNI", "Trabajador"], required=True)
+        # Preferimos la columna Trabajador para el ID de empleado cuando está presente.
+        META4_COL_ID = find_column(df_meta4, ["Trabajador", "Empleado", "DNI"], required=True)
         META4_COL_NOMBRE = find_column(df_meta4, ["Nombre"], required=True)
         META4_COL_EMPRESA = find_column(df_meta4, ["Centro_de_Trabajo", "Empresa", "Centro"], required=False)
         META4_COL_DEVENGOS = find_column(df_meta4, ["Total_Devengos", "Bruto", "Devengos"], required=True)
@@ -168,6 +224,12 @@ async def process_payroll(
         meta4_data = pd.DataFrame()
         meta4_data["dni_clean"] = df_meta4[META4_COL_ID].apply(clean_dni)
         meta4_data["id_meta4"] = df_meta4[META4_COL_ID].apply(clean_dni)
+
+        # Si el ID real está en otro campo (p.ej. DNI) y además existe Trabajador, preferimos Trabajador como id_empleado.
+        if META4_COL_ID != "Trabajador":
+            col_trab = find_column(df_meta4, ["Trabajador"], required=False)
+            if col_trab is not None:
+                meta4_data["id_meta4"] = df_meta4[col_trab].apply(clean_dni)
 
         # Nombre en Meta4 (intentando juntar apellidos si existen, o usar nombre directo)
         col_ap1 = find_column(df_meta4, ["Apellido_1", "Primer Apellido"])
@@ -203,11 +265,26 @@ async def process_payroll(
         meta4_data = meta4_data[meta4_data["dni_clean"] != ""]
         meta4_data = meta4_data.drop_duplicates(subset=['dni_clean'], keep='first')
 
+        # Build merge key (dni o id)
+        if match_by == "id":
+            xrp_data["match_key"] = xrp_data["id_xrp"].apply(clean_dni)
+            meta4_data["match_key"] = meta4_data["id_meta4"].apply(clean_dni)
+        else:
+            xrp_data["match_key"] = xrp_data["dni_clean"]
+            meta4_data["match_key"] = meta4_data["dni_clean"]
+
+        # Avoid duplicates on selected key (when id key is repeated)
+        xrp_data = xrp_data.drop_duplicates(subset=["match_key"], keep="first")
+        meta4_data = meta4_data.drop_duplicates(subset=["match_key"], keep="first")
 
         # ==========================================
         # 3. MERGE (OUTER)
-        # ==========================================
-        df_merged = pd.merge(meta4_data, xrp_data, on="dni_clean", how="outer", indicator=True)
+        # =========================================
+        xrp_ids = set(xrp_data["match_key"].astype(str).str.strip())
+        meta4_ids = set(meta4_data["match_key"].astype(str).str.strip())
+        common_ids = xrp_ids & meta4_ids
+
+        df_merged = pd.merge(meta4_data, xrp_data, on="match_key", how="outer", indicator=True)
 
         result_rows = []
         for _, row in df_merged.iterrows():
@@ -266,6 +343,17 @@ async def process_payroll(
             "data": result_rows,
             "total_rows": len(result_rows),
             "rows_with_diff": rows_with_diff,
+            "debug": {
+                "match_by": match_by,
+                "xrp_rows": len(xrp_data),
+                "meta4_rows": len(meta4_data),
+                "common_keys": len(common_ids),
+                "xrp_only_keys": len(xrp_ids - meta4_ids),
+                "meta4_only_keys": len(meta4_ids - xrp_ids),
+                "sample_common": list(list(common_ids)[:10]),
+                "sample_xrp_only": list(list(xrp_ids - meta4_ids)[:10]),
+                "sample_meta4_only": list(list(meta4_ids - xrp_ids)[:10]),
+            }
         })
 
     except HTTPException:

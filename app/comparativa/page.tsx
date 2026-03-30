@@ -281,6 +281,7 @@ export default function Home() {
     const [showConvenioDescuadresOnly, setShowConvenioDescuadresOnly] = useState(false);
     const [showBothSystemsOnly, setShowBothSystemsOnly] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
+    const [matchBy, setMatchBy] = useState<"dni" | "id">("dni");
 
     // ─── Conceptos state ───
     const [conceptFileXrp, setConceptFileXrp] = useState<File | null>(null);
@@ -304,6 +305,7 @@ export default function Home() {
             const formData = new FormData();
             formData.append("file_xrp", fileXrp);
             formData.append("file_meta4", fileMeta4);
+            formData.append("match_by", matchBy);
 
             const res = await fetch("/api/process", {
                 method: "POST",
@@ -479,6 +481,20 @@ export default function Home() {
                         <DropZone label={cfg.labelXrp} file={fileXrp} onFile={setFileXrp} icon="xrp" />
                         <DropZone label={cfg.labelMeta4} file={fileMeta4} onFile={setFileMeta4} icon="meta4" />
                     </section>
+
+                    <div className="flex justify-center mb-4">
+                        <label className="inline-flex items-center gap-3 text-sm font-medium text-slate-700">
+                            Comparar por:
+                            <select
+                                value={matchBy}
+                                onChange={(e) => setMatchBy(e.target.value as "dni" | "id")}
+                                className="border border-slate-300 bg-white rounded-md px-2 py-1 text-sm"
+                            >
+                                <option value="dni">DNI</option>
+                                <option value="id">ID empleado</option>
+                            </select>
+                        </label>
+                    </div>
 
                     {/* Action button */}
                     <div className="flex justify-center mb-12">
